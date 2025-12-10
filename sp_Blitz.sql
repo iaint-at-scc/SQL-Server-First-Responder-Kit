@@ -1489,40 +1489,78 @@ AS
 								)
 										SELECT DISTINCT
 										256 AS CheckID ,
-										d.name AS DatabaseName,
+																				d.name AS DatabaseName,
 										1 AS Priority ,
 										'Backup' AS FindingsGroup ,
-										'Log Backups to NUL' AS Finding ,
+										'Backup to NUL' AS Finding ,
 										'https://www.brentozar.com/go/nul' AS URL ,
-										N'The transaction log file has been backed up ' +  CAST((SELECT count(*)
-														 FROM   msdb.dbo.backupset AS b INNER JOIN
+										REPLACE (N'The transaction log file has been backed up ' +  CAST((SELECT count(*)
+																					 FROM   msdb.dbo.backupset AS b INNER JOIN
+																							msdb.dbo.backupmediafamily AS bmf
+																								ON	b.media_set_id = bmf.media_set_id
+																					 WHERE  b.database_name COLLATE SQL_Latin1_General_CP1_CS_AS = d.name COLLATE SQL_Latin1_General_CP1_CS_AS
+																							AND bmf.physical_device_name = 'NUL'
+																							AND b.type = 'L'
+																							AND b.backup_finish_date >= DATEADD(dd,
+																  -7, GETDATE())) AS NVARCHAR(8)) + ' time(s) to ''NUL'' in the last week, which means the backup does not exist. This breaks point-in-time recovery. ' 
+										+ CASE WHEN MaxNuls.NulBackupDate > MaxFulls.FullBackupDate
+										THEN N'The transaction log file was most recently backed up to ''NUL'' at ' 
+										+ CONVERT (varchar,NulBackupDate, 120)
+										+ ', which means that the most recent Full backup, taken at '
+										+ CONVERT (varchar,FullBackupDate, 120)
+										+ ' cannot be rolled forward beyond '
+										+ CONVERT (varchar,ISNULL (LogBackupDate, FullBackupDate), 120) 
+										+ CASE WHEN LogBackupDate IS NULL THEN ' Because there''s no Transaction Log Backup to disk at all.' ELSE '.' END
+										ELSE 'Fortunately, the most recent backup, taken at '
+										+ CONVERT (varchar,FullBackupDate, 120)
+										+ ' is not affected by the backup to ''NUL'' at '
+										+ CONVERT (varchar,NulBackupDate, 120) + '.'
+										END, 'The transaction log file has been backed up 0 time(s) to ''NUL'' in the last week, which means the backup does not exist. This breaks point-in-time recovery.', '') AS Details
+											FROM    master.sys.databases AS d
+											LEFT
+											JOIN    (
+														SELECT max (backup_finish_date) NulBackupDate, b.database_name
+																	 FROM   msdb.dbo.backupset AS b INNER JOIN
+																			msdb.dbo.backupmediafamily AS bmf
+																				ON	b.media_set_id = bmf.media_set_id
+																	 WHERE  bmf.physical_device_name = 'NUL'
+																			AND b.type = 'L'
+																	 GROUP BY b.database_name
+													) MaxNuls 
+											JOIN		(
+														SELECT max (backup_finish_date) FullBackupDate, b.database_name
+																	 FROM   msdb.dbo.backupset AS b INNER JOIN
+																			msdb.dbo.backupmediafamily AS bmf
+																				ON	b.media_set_id = bmf.media_set_id
+																	 WHERE  b.type = 'D'
+																	 GROUP BY b.database_name
+													) MaxFulls
+											ON MaxNuls.database_name  COLLATE SQL_Latin1_General_CP1_CS_AS = MaxFulls.database_name  COLLATE SQL_Latin1_General_CP1_CS_AS
+											ON d.name COLLATE SQL_Latin1_General_CP1_CS_AS = MaxFulls.database_name COLLATE SQL_Latin1_General_CP1_CS_AS
+											OUTER APPLY (SELECT max (backup_finish_date) LogBackupDate, b.database_name
+																	 FROM   msdb.dbo.backupset AS b INNER JOIN
+																			msdb.dbo.backupmediafamily AS bmf
+																				ON	b.media_set_id = bmf.media_set_id
+																	 WHERE  b.database_name COLLATE SQL_Latin1_General_CP1_CS_AS = d.name COLLATE SQL_Latin1_General_CP1_CS_AS
+																			AND bmf.physical_device_name != 'NUL'
+																			AND b.type = 'L'
+																			AND b.backup_finish_date < MaxNuls.NulBackupDate
+																	 GROUP BY b.database_name) MaxLogs
+										 WHERE   d.recovery_model IN ( 1, 2 )
+										 		AND d.database_id NOT IN ( 2, 3 )
+										 		AND d.source_database_id IS NULL
+										 		AND d.state NOT IN(1, 6, 10) /* Not currently offline or restoring, like log shipping databases */
+												AND d.is_in_standby = 0 /* Not a log shipping target database */
+												AND d.source_database_id IS NULL /* Excludes database snapshots */
+												AND (MaxNuls.NulBackupDate > MaxFulls.FullBackupDate
+												OR  EXISTS (SELECT *
+															FROM   msdb.dbo.backupset AS b INNER JOIN
 																msdb.dbo.backupmediafamily AS bmf
 																	ON	b.media_set_id = bmf.media_set_id
-														 WHERE  b.database_name COLLATE SQL_Latin1_General_CP1_CI_AS = d.name COLLATE SQL_Latin1_General_CP1_CI_AS
-																AND bmf.physical_device_name = 'NUL'
-																AND b.type = 'L'
-																AND b.backup_finish_date >= DATEADD(dd,
-																  -7, GETDATE())) AS NVARCHAR(8)) + ' time(s) to ''NUL'' in the last week, which means the backup does not exist. This breaks point-in-time recovery.' AS Details
-								FROM    master.sys.databases AS d
-								WHERE   d.recovery_model IN ( 1, 2 )
-										AND d.database_id NOT IN ( 2, 3 )
-										AND d.source_database_id IS NULL
-										AND d.state NOT IN(1, 6, 10) /* Not currently offline or restoring, like log shipping databases */
-										AND d.is_in_standby = 0 /* Not a log shipping target database */
-										AND d.source_database_id IS NULL /* Excludes database snapshots */
-										--AND d.name NOT IN ( SELECT DISTINCT
-										--						  DatabaseName
-										--					FROM  #SkipChecks
-										--					WHERE CheckID IS NULL OR CheckID = 2)
-										AND EXISTS (	 SELECT *
-														 FROM   msdb.dbo.backupset AS b INNER JOIN
-																msdb.dbo.backupmediafamily AS bmf
-																	ON	b.media_set_id = bmf.media_set_id
-														 WHERE  d.name COLLATE SQL_Latin1_General_CP1_CI_AS = b.database_name COLLATE SQL_Latin1_General_CP1_CI_AS
-																AND bmf.physical_device_name = 'NUL'
-																AND b.type = 'L'
-																AND b.backup_finish_date >= DATEADD(dd,
-																  -7, GETDATE()) );
+															WHERE  d.name COLLATE SQL_Latin1_General_CP1_CS_AS = b.database_name COLLATE SQL_Latin1_General_CP1_CS_AS
+															  AND bmf.physical_device_name = 'NUL'
+															  AND b.type = 'L'
+															  AND b.backup_finish_date >= DATEADD(dd,-7, GETDATE()) ));
 					END;
 
 				/*
