@@ -3475,7 +3475,7 @@ AS
                                                                 'Informational' AS FindingsGroup ,
                                                                 'Cluster Node Info' AS Finding ,
                                                                 'https://BrentOzar.com/go/node' AS URL,
-                                                                'The cluster nodes are: ' + STUFF((SELECT ', ' + CASE ar.replica_server_name WHEN dhags.primary_replica THEN 'PRIMARY'
+                                                                'The cluster nodes are: ' + STUFF((SELECT DISTINCT ', ' + CASE ar.replica_server_name WHEN dhags.primary_replica THEN 'PRIMARY'
                                                                 ELSE 'SECONDARY'
                                                                 END + '=' + UPPER(ar.replica_server_name) 
                                                                 FROM sys.availability_groups AS ag
